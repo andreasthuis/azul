@@ -77,12 +77,12 @@ end
 
 function SyncSession:debugPrint(...)
 	if self.config.SILENT_MODE or not self.config.DEBUG_MODE then return end
-	print(`[🐛 Azul]:`, ...)
+	print(`[🐛 Azul::{script}]:`, ...)
 end
 
 function SyncSession:infoPrint(...)
 	if self.config.SILENT_MODE then return end
-	print(`[Azul]:	`, ...)
+	print(`[Azul]: `, ...)
 end
 
 function SyncSession:rebuildServiceSet()
@@ -661,7 +661,10 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 	end
 
 	function self:startSync()
-		if self.syncEnabled then return end
+		if self.syncEnabled then
+			warn(`[Azul::{script}]: A Sync Session already active!`)
+			return
+		end
 
 		self:infoPrint("Starting sync...")
 		self.syncEnabled = true

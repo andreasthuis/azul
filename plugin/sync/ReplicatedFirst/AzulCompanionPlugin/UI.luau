@@ -86,11 +86,11 @@ end
 local function validateNumberInput(newValue: string, callback: (number) -> ())
 	local numberValue = tonumber(newValue)
 	if not numberValue then
-		warn(`[Azul]: (UI): Invalid number input: {newValue}`)
+		warn(`[Azul::{script}]: Invalid number input: {newValue}`)
 		return
 	end
 	if numberValue <= 0 then
-		warn(`[Azul]: (UI): Number input must be greater than 0: {newValue}`)
+		warn(`[Azul::{script}]: Number input must be greater than 0: {newValue}`)
 		return
 	end
 	callback(numberValue)
@@ -271,7 +271,7 @@ function UI.new(plugin, callbacks, settingsScope, helpers): SelfType
 	debugModeCheckbox:SetValue(Config.DEBUG_MODE)
 	debugModeCheckbox:SetValueChangedFunction(function(newValue)
 		Config.DEBUG_MODE = newValue
-		helpers.debugPrint(`(UI): Debug mode set to: {newValue}`)
+		helpers.debugPrint(`Debug mode set to: {newValue}`)
 	end)
 	mainSection:AddChild(debugModeCheckbox:GetFrame())
 	mainSection:AddChild(createInfoLabel("Debug mode enables verbose logging to the output console."))
@@ -411,7 +411,7 @@ function UI.new(plugin, callbacks, settingsScope, helpers): SelfType
 
 	-- Settings scope callback
 	settingsScopeDropdown:SetValueChangedFunction(function(newValue: number | string, newText: string)
-		helpers.debugPrint("(UI): Settings scope changed to:", newText)
+		helpers.debugPrint("Settings scope changed to:", newText)
 
 		local newScope
 		if newValue == 1 then
