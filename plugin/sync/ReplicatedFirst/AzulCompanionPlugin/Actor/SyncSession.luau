@@ -545,6 +545,18 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 		end
 	end
 
+	--[=[
+		The handshake is considered complete once we receive any message from the daemon, even if it's not an explicit handshakeAck. 
+		This is to handle the case where the daemon might send a message before it receives our handshakeStudio message, 
+		which would indicate that the daemon is alive and has received our handshake attempt.
+		]=]
+	local function implicitHandshake()
+		if not self.handshakeComplete then
+			self.handshakeComplete = true
+			self:debugPrint("Handshake implicitly satisfied by daemon message")
+		end
+	end
+
 	local function processMessage(message)
 		self:debugPrint("Processing message type:", message.type)
 
@@ -579,9 +591,11 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 				warn("[Azul]: Total tracked instances:", count)
 			end
 		elseif message.type == "requestSnapshot" then
+			implicitHandshake()
 			self:infoPrint("Snapshot requested by daemon")
 			sendFullSnapshot(message.options)
 		elseif message.type == "buildSnapshot" then
+			implicitHandshake()
 			self:infoPrint("Applying build snapshot from daemon")
 			setOutboundSuppressed(true)
 
@@ -604,6 +618,7 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 				self:stopSync()
 			end)
 		elseif message.type == "pushSnapshot" then
+			implicitHandshake()
 			self:infoPrint("Applying push snapshot from daemon")
 			setOutboundSuppressed(true)
 
@@ -650,6 +665,7 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 				self.handshakeComplete = true
 				self:debugPrint("Handshake acknowledged by daemon")
 				self:infoPrint("Handshake with Daemon successful")
+				sendDaemonConfig()
 			end
 		elseif message.type == "daemonDisconnect" then
 			self:infoPrint("Daemon is shutting down; disconnecting plugin")
@@ -684,13 +700,14 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 
 			local startTime = tick()
 			while tick() - startTime < HANDSHAKE_TIMEOUT do
+				if not self.syncEnabled or not self.wsClient or not self.wsClient.connected then return false end
 				if self.handshakeComplete then return true end
 				task.wait(0.1)
 			end
 
 			tries += 1
 			warn(`[Azul]: Handshake attempt {tries} failed, retrying...`)
-			--self.wsClient:reconnect()
+		--self.wsClient:reconnect()
 		until tries >= HANDSHAKE_MAX_RETRIES
 
 		return self.handshakeComplete
@@ -733,8 +750,6 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 				self:stopSync()
 				return
 			end
-
-			sendDaemonConfig()
 		end)
 
 		self.wsClient:on("message", function(message)
