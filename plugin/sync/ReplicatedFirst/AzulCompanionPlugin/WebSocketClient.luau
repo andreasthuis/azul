@@ -19,7 +19,7 @@ type configType = {
 }
 
 -- self type
-type WebSocketClient = {
+export type WebSocketClient = {
 	url: string,
 	client: WebStreamClient,
 	connected: boolean,
@@ -28,7 +28,9 @@ type WebSocketClient = {
 
 	new: (url: string?) -> WebSocketClient,
 	on: (self: WebSocketClient, event: string, handler: (any) -> ()) -> (),
+	once: (self: WebSocketClient, event: string, handler: (any) -> ()) -> (),
 	connect: (self: WebSocketClient) -> boolean,
+	reconnect: (self: WebSocketClient) -> boolean,
 	handleMessage: (self: WebSocketClient, message: string) -> (),
 	send: (self: WebSocketClient, message: string) -> boolean,
 	disconnect: (self: WebSocketClient) -> (),
@@ -70,6 +72,15 @@ function WebSocketClient:on(event, handler)
 	self.messageHandlers[event] = handler
 end
 
+function WebSocketClient:once(event, handler)
+	self = self :: WebSocketClient
+	local function wrapper(...)
+		handler(...)
+		self.messageHandlers[event] = nil
+	end
+	self.messageHandlers[event] = wrapper
+end
+
 function WebSocketClient:connect()
 	self = self :: WebSocketClient
 	if self.connected then return true end
@@ -104,10 +115,19 @@ function WebSocketClient:connect()
 	-- Notify connection established
 	self:debugPrint("Connected to", self.url)
 	if self.messageHandlers.connect then task.defer(function()
-		self.messageHandlers.connect()
-	end) end
+			self.messageHandlers.connect()
+		end) end
 
 	return true
+end
+
+function WebSocketClient:reconnect()
+	self = self :: WebSocketClient
+
+	self:debugPrint(`Reconnect requested to WebSocket at: {self.url}`)
+
+	self:disconnect()
+	return self:connect()
 end
 
 function WebSocketClient:handleMessage(message)
@@ -120,8 +140,12 @@ function WebSocketClient:handleMessage(message)
 		return HttpService:JSONDecode(message)
 	end)
 
-	if success and self.messageHandlers.message then
-		self.messageHandlers.message(data)
+	if success then
+		if self.messageHandlers.message then self.messageHandlers.message(data) end
+		local messageType = data and data.type
+		if type(messageType) == "string" and self.messageHandlers[messageType] then
+			self.messageHandlers[messageType](data)
+		end
 	elseif not success then
 		warn("[WebSocket]: Failed to parse message:", message)
 	end

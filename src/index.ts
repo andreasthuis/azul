@@ -24,6 +24,7 @@ export class SyncDaemon {
   private batchDepth = 0; // Tracks nested batch processing
   private batchNeedsSourcemapRegen = false; // Defer regen until batch ends
   private stopPromise: Promise<void> | null = null;
+  private handshakeComplete = false;
 
   constructor() {
     this.tree = new TreeManager();
@@ -37,7 +38,9 @@ export class SyncDaemon {
       res.end("Not found");
     });
 
-    this.ipc = new IPCServer(config.port, this.httpServer);
+    this.ipc = new IPCServer(config.port, this.httpServer, {
+      requestSnapshotOnConnect: false,
+    });
 
     this.setupHandlers();
     this.httpServer.listen(config.port);
@@ -49,6 +52,10 @@ export class SyncDaemon {
   private setupHandlers(): void {
     // Handle messages from Studio (WebSocket)
     this.ipc.onMessage((message) => this.handleStudioMessage(message));
+
+    this.ipc.onConnection(() => {
+      this.handshakeComplete = false;
+    });
 
     // Handle file changes from filesystem
     this.fileWatcher.onChange((filePath, source) => {
@@ -97,6 +104,16 @@ export class SyncDaemon {
 
       case "ping":
         this.ipc.send({ type: "pong" });
+        break;
+
+      case "handshakeStudio":
+        if (!this.handshakeComplete) {
+          this.handshakeComplete = true;
+          this.ipc.send({ type: "handshakeAck" });
+          this.ipc.requestSnapshot();
+        } else {
+          this.ipc.send({ type: "handshakeAck" });
+        }
         break;
 
       case "clientDisconnect":
