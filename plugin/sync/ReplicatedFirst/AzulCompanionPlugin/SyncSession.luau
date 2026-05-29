@@ -14,10 +14,10 @@ local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 
 -- Modules
-local AzulService = require("../AzulService")
-local Enums = require("../Enums")
-local SettingsStore = require("../SettingsStore")
-local WebSocketClient = require("../WebSocketClient")
+local AzulService = require("./AzulService")
+local Enums = require("./Enums")
+local SettingsStore = require("./SettingsStore")
+local WebSocketClient = require("./WebSocketClient")
 
 export type SyncSession = {
 	-- Constructor fields

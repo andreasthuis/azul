@@ -16,13 +16,13 @@ if not pluginParent then return end
 local azulPluginFolder = pluginParent.Parent
 if not azulPluginFolder then return end
 
-local UI = require("../UI")
-local Config = require("../Config")
-local Enums = require("../Enums")
-local SettingsStore = require("../SettingsStore")
+local UI = require("./UI")
+local Config = require("./Config")
+local Enums = require("./Enums")
+local SettingsStore = require("./SettingsStore")
 local SyncSession = require("./SyncSession")
 
-local newUI = require("../App/UI")
+local newUI = require("./App/UI")
 
 local function debugPrint(...)
 	if Config.DEBUG_MODE then print("[🐛 Azul]", ...) end
