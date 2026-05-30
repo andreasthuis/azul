@@ -65,6 +65,7 @@ type AzulUI = {
 	icon: fusion.Value<string>,
 	isOpen: fusion.Value<boolean>,
 	syncEnabled: fusion.Value<boolean>,
+	handshakeComplete: fusion.Value<boolean>,
 	debugMode: fusion.Value<boolean>,
 	silentMode: fusion.Value<boolean>,
 	settingsScopeValue: fusion.Value<string>,
@@ -79,6 +80,7 @@ type AzulUI = {
 
 	GetSyncState: (AzulUI) -> boolean,
 	UpdateSyncState: (AzulUI, boolean) -> (),
+	UpdateHandshakeState: (AzulUI, boolean) -> (),
 	UpdateConfig: (AzulUI) -> (),
 	SetSettingsScope: (AzulUI, any) -> (),
 }
@@ -223,6 +225,7 @@ function UI.new(plugin, callbacks, settingsScope, helpers): AzulUI
 	self.icon = Value(self.LOGO)
 	self.isOpen = Value(true)
 	self.syncEnabled = Value(false)
+	self.handshakeComplete = Value(false)
 	self.debugMode = Value(Config.DEBUG_MODE)
 	self.silentMode = Value(Config.SILENT_MODE)
 	self.settingsScopeValue = Value(settingsScope == Enums.scope.GLOBAL and "Global" or "Project")
@@ -296,7 +299,9 @@ function UI.new(plugin, callbacks, settingsScope, helpers): AzulUI
 							}),
 							TextButton({
 								Text = Computed(function(use)
-									return use(self.syncEnabled) and "Disconnect" or "Connect"
+									if not use(self.syncEnabled) then return "Connect" end
+									if use(self.handshakeComplete) then return "Disconnect" end
+									return "Connecting..."
 								end),
 								Size = UDim2.new(1, 0, 0, Theme.CompSizeY.Large),
 								Solid = true,
@@ -453,6 +458,11 @@ function UI:UpdateSyncState(enabled: boolean)
 	self.isSyncEnabled = enabled
 	self.syncEnabled:set(enabled)
 	self.icon:set(if enabled then self.LOGO_SYNCED else self.LOGO)
+	if not enabled then self.handshakeComplete:set(false) end
+end
+
+function UI:UpdateHandshakeState(complete: boolean)
+	self.handshakeComplete:set(complete)
 end
 
 function UI:SetSettingsScope(scope)

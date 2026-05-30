@@ -22,7 +22,8 @@ local Enums = require("./Enums")
 local SettingsStore = require("./SettingsStore")
 local SyncSession = require("./SyncSession")
 
-local newUI = require("./App/UI")
+local azulApp = require("./App/UI")
+local azulLegacyUI = require("./UI")
 
 local function debugPrint(...)
 	if Config.DEBUG_MODE then print("[🐛 Azul]", ...) end
@@ -96,11 +97,16 @@ return {}
 	end,
 }
 
---  local azulUI = UI.new(plugin, uiCallbacks, settingsStore:getScope(), uiHelpers)
---  session:setUI(azulUI)
+local USE_LEGACY_UI = false
 
-local newAzulUI = newUI.new(plugin, uiCallbacks, settingsStore:getScope(), uiHelpers)
-session:setUI(newAzulUI)
+if not USE_LEGACY_UI then
+	local newAzulUI = azulApp.new(plugin, uiCallbacks, settingsStore:getScope(), uiHelpers)
+	session:setUI(newAzulUI)
+else
+	warn(`[Azul::{script}]: Using legacy UI, this is not recommended!`)
+	local azulUI = UI.new(plugin, uiCallbacks, settingsStore:getScope(), uiHelpers)
+	session:setUI(azulUI)
+end
 
 plugin.Unloading:Connect(function()
 	settingsStore:saveSettings()

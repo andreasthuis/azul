@@ -584,6 +584,7 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 		if not self.handshakeComplete then
 			self.handshakeComplete = true
 			self:debugPrint("Handshake implicitly satisfied by daemon message")
+			if self.ui then self.ui:UpdateHandshakeState(true) end
 		end
 	end
 
@@ -696,6 +697,7 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 				self:debugPrint("Handshake acknowledged by daemon")
 				self:infoPrint("Handshake with Daemon successful")
 				sendDaemonConfig()
+				if self.ui then self.ui:UpdateHandshakeState(true) end
 			end
 		elseif message.type == "daemonDisconnect" then
 			self:infoPrint("Daemon is shutting down; disconnecting plugin")
@@ -759,6 +761,7 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 		self.batchFlushToken += 1
 
 		if self.ui then self.ui:UpdateSyncState(true) end
+		if self.ui then self.ui:UpdateHandshakeState(false) end
 
 		self.wsClient = WebSocketClient.new(self.config.WS_URL, {
 			debugMode = self.config.DEBUG_MODE,
@@ -869,6 +872,7 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 		self.syncEnabled = false
 		self.handshakeComplete = false
 
+		if self.ui then self.ui:UpdateHandshakeState(false) end
 		if self.ui then self.ui:UpdateSyncState(false) end
 
 		if self.wsClient then self.wsClient:disconnect() end
