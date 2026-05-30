@@ -115,7 +115,11 @@ export class BuildCommand {
 
     await new Promise<void>((resolve) => {
       this.ipc.onConnection(() => {
-        log.info("Studio connected. Sending build snapshot...");
+        log.info("Studio connected. Waiting for handshake...");
+      });
+
+      this.ipc.onHandshake(() => {
+        log.info("Handshake complete. Sending build snapshot...");
         this.ipc.send({
           type: "buildSnapshot",
           data: instances,

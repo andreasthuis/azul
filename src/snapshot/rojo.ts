@@ -5,6 +5,7 @@ import { log } from "../util/log.js";
 import {
   classifyScriptFileName,
   isScriptFileName,
+  ScriptClassName,
 } from "../util/scriptFile.js";
 import type { InstanceData } from "../ipc/messages.js";
 
@@ -244,23 +245,34 @@ export class RojoSnapshotBuilder {
     );
     const pathKind = absPath ? await this.pathKind(absPath) : null;
 
-    let initScript: { fileName: string; source: string } | null = null;
+    let initScript: {
+      fileName: string;
+      source: string;
+      className?: ScriptClassName;
+    } | null = null;
     if (absPath && pathKind === "dir") {
       initScript = await this.findInit(absPath);
     } else if (absPath && pathKind === "file") {
       const fileName = path.basename(absPath);
-      if (!isScriptFileName(fileName)) {
-        throw new Error(`$path target ${absPath} is not a .lua/.luau file.`);
+      if (this.isJsonModuleFile(fileName)) {
+        const source = await this.readJsonModuleSource(absPath);
+        initScript = { fileName, source, className: "ModuleScript" };
+      } else {
+        if (!isScriptFileName(fileName)) {
+          throw new Error(`$path target ${absPath} is not a .lua/.luau file.`);
+        }
+        const source = await fs.readFile(absPath, "utf-8");
+        initScript = { fileName, source };
       }
-      const source = await fs.readFile(absPath, "utf-8");
-      initScript = { fileName, source };
     }
 
     // If there's an init script, the folder becomes a ModuleScript at the same path.
     if (initScript) {
       this.ensureFolder(pathSegments.slice(0, -1), results);
       this.moduleContainers.add(pathSegments.join("/"));
-      const scriptClass = classifyScriptFileName(initScript.fileName).className;
+      const scriptClass =
+        initScript.className ??
+        classifyScriptFileName(initScript.fileName).className;
       results.push({
         guid: this.makeGuid(),
         className: scriptClass,
@@ -390,6 +402,23 @@ export class RojoSnapshotBuilder {
         continue;
       }
 
+      if (this.isJsonModuleFile(entry.name)) {
+        const baseName = path.parse(entry.name).name;
+        if (definedChildren.has(baseName)) {
+          continue;
+        }
+        const source = await this.readJsonModuleSource(fullPath);
+        this.ensureFolder(destPath, results);
+        results.push({
+          guid: this.makeGuid(),
+          className: "ModuleScript",
+          name: baseName,
+          path: [...destPath, baseName],
+          source,
+        });
+        continue;
+      }
+
       if (isScriptFileName(entry.name)) {
         const baseName = path.parse(entry.name).name;
         if (definedChildren.has(baseName)) {
@@ -456,6 +485,109 @@ export class RojoSnapshotBuilder {
     }
 
     return [...new Set(variants)];
+  }
+
+  private isJsonModuleFile(fileName: string): boolean {
+    if (!fileName.endsWith(".json")) return false;
+    if (fileName === "default.project.json") return false;
+    if (fileName.endsWith(".model.json")) return false;
+    return true;
+  }
+
+  private async readJsonModuleSource(filePath: string): Promise<string> {
+    let parsed: unknown;
+    try {
+      const raw = await fs.readFile(filePath, "utf-8");
+      parsed = JSON.parse(raw) as unknown;
+    } catch (error) {
+      throw new Error(`Failed to parse JSON module at ${filePath}: ${error}`);
+    }
+
+    return `return ${this.jsonToLuau(parsed, 0)}`;
+  }
+
+  private jsonToLuau(value: unknown, indent: number): string {
+    if (value === null || value === undefined) {
+      return "nil";
+    }
+
+    switch (typeof value) {
+      case "string":
+        return JSON.stringify(value);
+      case "number":
+      case "boolean":
+        return String(value);
+      case "object":
+        break;
+      default:
+        return "nil";
+    }
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        return "{}";
+      }
+
+      const indentStr = "\t".repeat(indent);
+      const childIndent = "\t".repeat(indent + 1);
+      const parts = value.map(
+        (entry) => `${childIndent}${this.jsonToLuau(entry, indent + 1)},`,
+      );
+      return `{
+${parts.join("\n")}
+${indentStr}}`;
+    }
+
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) {
+      return "{}";
+    }
+
+    const indentStr = "\t".repeat(indent);
+    const childIndent = "\t".repeat(indent + 1);
+    const parts = entries.map(([key, entryValue]) => {
+      const formattedKey = this.isLuaIdentifier(key)
+        ? key
+        : `[${JSON.stringify(key)}]`;
+      return `${childIndent}${formattedKey} = ${this.jsonToLuau(
+        entryValue,
+        indent + 1,
+      )},`;
+    });
+
+    return `{
+${parts.join("\n")}
+${indentStr}}`;
+  }
+
+  private isLuaIdentifier(value: string): boolean {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) return false;
+    const keywords = new Set([
+      "and",
+      "break",
+      "do",
+      "else",
+      "elseif",
+      "end",
+      "false",
+      "for",
+      "function",
+      "if",
+      "in",
+      "local",
+      "nil",
+      "not",
+      "or",
+      "repeat",
+      "return",
+      "then",
+      "true",
+      "until",
+      "while",
+      "const",
+      "export",
+    ]);
+    return !keywords.has(value);
   }
 
   private async exists(target: string): Promise<boolean> {

@@ -14,10 +14,10 @@ local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 
 -- Modules
-local AzulService = require("../AzulService")
-local Enums = require("../Enums")
-local SettingsStore = require("../SettingsStore")
-local WebSocketClient = require("../WebSocketClient")
+local AzulService = require("./AzulService")
+local Enums = require("./Enums")
+local SettingsStore = require("./SettingsStore")
+local WebSocketClient = require("./WebSocketClient")
 
 export type SyncSession = {
 	-- Constructor fields
@@ -28,7 +28,7 @@ export type SyncSession = {
 
 	-- State fields
 	syncEnabled: boolean,
-	wsClient: any,
+	wsClient: WebSocketClient.WebSocketClient?,
 	trackedInstances: { [Instance]: string },
 	guidMap: { [string]: Instance },
 	usedGuids: { [string]: boolean },
@@ -48,6 +48,7 @@ export type SyncSession = {
 	batchFlushToken: number,
 	batchAccumulator: number,
 	serviceSet: { [string]: boolean },
+	handshakeComplete: boolean,
 
 	-- Methods
 	startSync: (self: SyncSession) -> (),
@@ -77,12 +78,12 @@ end
 
 function SyncSession:debugPrint(...)
 	if self.config.SILENT_MODE or not self.config.DEBUG_MODE then return end
-	print(`[🐛 Azul]:`, ...)
+	print(`[🐛 Azul::{script}]:`, ...)
 end
 
 function SyncSession:infoPrint(...)
 	if self.config.SILENT_MODE then return end
-	print(`[Azul]:	`, ...)
+	print(`[Azul]: `, ...)
 end
 
 function SyncSession:rebuildServiceSet()
@@ -124,6 +125,7 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 	self.batchFlushToken = 0
 	self.batchAccumulator = 0
 	self.serviceSet = {}
+	self.handshakeComplete = false
 
 	self:rebuildServiceSet()
 
@@ -154,8 +156,14 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 		end
 
 		self:debugPrint(`Sending message: {message.type}`)
-		local json = HttpService:JSONEncode(message)
-		return self.wsClient:send(json)
+		local encodeOk, encodedOrErr = pcall(function()
+			return HttpService:JSONEncode(message)
+		end)
+		if not encodeOk then
+			warn(`[Azul]: Cannot JSON-encode outbound message (type: {tostring(message.type)}): {encodedOrErr}`)
+			return false
+		end
+		return self.wsClient:send(encodedOrErr)
 	end
 
 	local function flushOutboundQueues()
@@ -440,120 +448,7 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 		queueDeletion(guid)
 	end
 
-	local sendFullSnapshot
-	local function processMessage(message)
-		self:debugPrint("Processing message type:", message.type)
-
-		if message.type == "patchScript" then
-			self:debugPrint("Patch requested for GUID:", message.guid)
-			local instance = self.guidMap[message.guid]
-			if instance and AzulService.isScript(instance) then
-				setOutboundSuppressed(true)
-				self.recentPatches[message.guid] = true
-				self.lastPatchTime[message.guid] = tick()
-
-				self.applyingPatch = true
-				AzulService.setScriptSource(instance :: Script, message.source)
-
-				task.delay(0.2, function()
-					self.applyingPatch = false
-					setOutboundSuppressed(false)
-				end)
-
-				self:infoPrint("Updated script:", `{instance.Parent}.{instance.Name}`)
-
-				task.delay(0.2, function()
-					task.wait(0.2)
-					self.recentPatches[message.guid] = nil
-				end)
-			else
-				warn("[Azul]: Cannot apply patch - instance not found for GUID:", message.guid)
-				local count = 0
-				for _ in pairs(self.guidMap) do
-					count += 1
-				end
-				warn("[Azul]: Total tracked instances:", count)
-			end
-		elseif message.type == "requestSnapshot" then
-			self:infoPrint("Snapshot requested by daemon")
-			sendFullSnapshot(message.options)
-		elseif message.type == "buildSnapshot" then
-			self:infoPrint("Applying build snapshot from daemon")
-			setOutboundSuppressed(true)
-
-			local ok, err = pcall(function()
-				if message.destructive == true then wipeBuildRoots(message.data or {}) end
-
-				local created, updated, appliedGuidMap = AzulService.applySnapshotInstances(message.data)
-				for guid, instance in pairs(appliedGuidMap) do
-					self.guidMap[guid] = instance
-					self.trackedInstances[instance] = guid
-					attachListeners(instance)
-				end
-				self:infoPrint(`Build snapshot applied ({created} created, {updated} updated)`)
-			end)
-
-			setOutboundSuppressed(false)
-			if not ok then warn("[Azul]: Error applying build snapshot: ", err) end
-
-			task.delay(0.5, function()
-				self:stopSync()
-			end)
-		elseif message.type == "pushSnapshot" then
-			self:infoPrint("Applying push snapshot from daemon")
-			setOutboundSuppressed(true)
-
-			local ok, err = pcall(function()
-				for _, mapping in ipairs(message.mappings or {}) do
-					local destination = mapping.destination or {}
-					if #destination == 0 then
-						warn("[Azul]: Push mapping missing destination; skipping")
-						continue
-					end
-
-					self:debugPrint(
-						`Destination for push snapshot: {table.concat(destination, "/")}, destructive: {tostring(
-							mapping.destructive
-						)}`
-					)
-
-					local targetContainer = AzulService.getOrCreatePath(destination)
-					if mapping.destructive then wipeChildren(targetContainer) end
-
-					local created, updated, appliedGuidMap =
-						AzulService.applySnapshotInstances(mapping.instances or {}, mapping.destination)
-					for guid, instance in pairs(appliedGuidMap) do
-						self.guidMap[guid] = instance
-						self.trackedInstances[instance] = guid
-						attachListeners(instance)
-					end
-					self:infoPrint(
-						`Push applied to {table.concat(destination, "/")} ({created} created, {updated} updated)`
-					)
-				end
-			end)
-
-			setOutboundSuppressed(false)
-			if not ok then warn("[Azul]: Error applying push snapshot", err) end
-
-			task.delay(0.5, function()
-				self:stopSync()
-			end)
-		elseif message.type == "requestPushConfig" then
-			sendDaemonConfig(true)
-		elseif message.type == "daemonDisconnect" then
-			self:infoPrint("Daemon is shutting down; disconnecting plugin")
-			self:stopSync(true)
-		elseif message.type == "error" then
-			warn("[Azul]: Daemon error:", message.message)
-		elseif message.type == "pong" then
-			self:debugPrint("Received pong")
-		else
-			warn("[Azul]: Unknown message type:", message.type)
-		end
-	end
-
-	sendFullSnapshot = function(options: { includeProperties: boolean, scriptsAndDescendantsOnly: boolean }?)
+	local function sendFullSnapshot(options: { includeProperties: boolean, scriptsAndDescendantsOnly: boolean }?)
 		self:infoPrint("Sending full snapshot...")
 
 		local includeProperties = options and options.includeProperties == true
@@ -637,7 +532,31 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 			index += 1
 		end
 
-		sendMessage("fullSnapshot", { data = instances })
+		local sent = sendMessage("fullSnapshot", { data = instances })
+		if not sent then
+			-- Full snapshot encoding failed; find and exclude the problematic instance(s)
+			self:infoPrint("Full snapshot encoding failed! Scanning for non-encodable instances...")
+			local filteredInstances = {}
+			for _, instanceData in ipairs(instances) do
+				if pcall(HttpService.JSONEncode, HttpService, instanceData) then
+					table.insert(filteredInstances, instanceData)
+				else
+					warn(
+						`[Azul]: Instance "{instanceData.name}" ({instanceData.className}) at {table.concat(
+							instanceData.path or {},
+							"."
+						)} cannot be JSON-encoded and will be excluded from this sync session. This is usually caused by null bytes or non-UTF-8 characters in the instance name or script source.`
+					)
+				end
+			end
+			instances = filteredInstances
+			if #filteredInstances > 0 then
+				sendMessage("fullSnapshot", { data = filteredInstances })
+			else
+				warn("[Azul]: No instances could be encoded, sync cannot proceed for this session.")
+				return
+			end
+		end
 		self:infoPrint("Snapshot sent:", #instances, "instances (", scriptCount, "scripts )")
 
 		if self.syncEnabled then
@@ -656,12 +575,185 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 		end
 	end
 
+	--[=[
+		The handshake is considered complete once we receive any message from the daemon, even if it's not an explicit handshakeAck. 
+		This is to handle the case where the daemon might send a message before it receives our handshakeStudio message, 
+		which would indicate that the daemon is alive and has received our handshake attempt.
+		]=]
+	local function implicitHandshake()
+		if not self.handshakeComplete then
+			self.handshakeComplete = true
+			self:debugPrint("Handshake implicitly satisfied by daemon message")
+			if self.ui then self.ui:UpdateHandshakeState(true) end
+		end
+	end
+
+	local function processMessage(message)
+		self:debugPrint("Processing message type:", message.type)
+
+		if message.type == "patchScript" then
+			self:debugPrint("Patch requested for GUID:", message.guid)
+			local instance = self.guidMap[message.guid]
+			if instance and AzulService.isScript(instance) then
+				setOutboundSuppressed(true)
+				self.recentPatches[message.guid] = true
+				self.lastPatchTime[message.guid] = tick()
+
+				self.applyingPatch = true
+				AzulService.setScriptSource(instance :: Script, message.source)
+
+				task.delay(0.2, function()
+					self.applyingPatch = false
+					setOutboundSuppressed(false)
+				end)
+
+				self:infoPrint("Updated script:", `{instance.Parent}.{instance.Name}`)
+
+				task.delay(0.2, function()
+					task.wait(0.2)
+					self.recentPatches[message.guid] = nil
+				end)
+			else
+				warn("[Azul]: Cannot apply patch - instance not found for GUID:", message.guid)
+				local count = 0
+				for _ in pairs(self.guidMap) do
+					count += 1
+				end
+				warn("[Azul]: Total tracked instances:", count)
+			end
+		elseif message.type == "requestSnapshot" then
+			implicitHandshake()
+			self:infoPrint("Snapshot requested by daemon")
+			sendFullSnapshot(message.options)
+		elseif message.type == "buildSnapshot" then
+			implicitHandshake()
+			self:infoPrint("Applying build snapshot from daemon")
+			setOutboundSuppressed(true)
+
+			local ok, err = pcall(function()
+				if message.destructive == true then wipeBuildRoots(message.data or {}) end
+
+				local created, updated, appliedGuidMap = AzulService.applySnapshotInstances(message.data)
+				for guid, instance in pairs(appliedGuidMap) do
+					self.guidMap[guid] = instance
+					self.trackedInstances[instance] = guid
+					attachListeners(instance)
+				end
+				self:infoPrint(`Build snapshot applied ({created} created, {updated} updated)`)
+			end)
+
+			setOutboundSuppressed(false)
+			if not ok then warn("[Azul]: Error applying build snapshot: ", err) end
+
+			task.delay(0.5, function()
+				self:stopSync()
+			end)
+		elseif message.type == "pushSnapshot" then
+			implicitHandshake()
+			self:infoPrint("Applying push snapshot from daemon")
+			setOutboundSuppressed(true)
+
+			local ok, err = pcall(function()
+				for _, mapping in ipairs(message.mappings or {}) do
+					local destination = mapping.destination or {}
+					if #destination == 0 then
+						warn("[Azul]: Push mapping missing destination; skipping")
+						continue
+					end
+
+					self:debugPrint(
+						`Destination for push snapshot: {table.concat(destination, "/")}, destructive: {tostring(
+							mapping.destructive
+						)}`
+					)
+
+					local targetContainer = AzulService.getOrCreatePath(destination)
+					if mapping.destructive then wipeChildren(targetContainer) end
+
+					local created, updated, appliedGuidMap =
+						AzulService.applySnapshotInstances(mapping.instances or {}, mapping.destination)
+					for guid, instance in pairs(appliedGuidMap) do
+						self.guidMap[guid] = instance
+						self.trackedInstances[instance] = guid
+						attachListeners(instance)
+					end
+					self:infoPrint(
+						`Push applied to {table.concat(destination, "/")} ({created} created, {updated} updated)`
+					)
+				end
+			end)
+
+			setOutboundSuppressed(false)
+			if not ok then warn("[Azul]: Error applying push snapshot", err) end
+
+			task.delay(0.5, function()
+				self:stopSync()
+			end)
+		elseif message.type == "requestPushConfig" then
+			sendDaemonConfig(true)
+		elseif message.type == "handshakeAck" then
+			if not self.handshakeComplete then
+				self.handshakeComplete = true
+				self:debugPrint("Handshake acknowledged by daemon")
+				self:infoPrint("Handshake with Daemon successful")
+				sendDaemonConfig()
+				if self.ui then self.ui:UpdateHandshakeState(true) end
+			end
+		elseif message.type == "daemonDisconnect" then
+			self:infoPrint("Daemon is shutting down; disconnecting plugin")
+			self:stopSync(true)
+		elseif message.type == "error" then
+			warn("[Azul]: Daemon error:", message.message)
+		elseif message.type == "pong" then
+			self:debugPrint("Received pong")
+		else
+			warn("[Azul]: Unknown message type:", message.type)
+		end
+	end
+
+	local function tryHandshake(): boolean
+		if not self.wsClient then
+			warn("[Azul]: Cannot perform handshake - WebSocket client not initialized")
+			return false
+		end
+
+		if not self.wsClient.connected then
+			warn("[Azul]: Cannot perform handshake - WebSocket client not connected")
+			return false
+		end
+
+		local tries = 0
+		local HANDSHAKE_MAX_RETRIES = 5
+		local HANDSHAKE_TIMEOUT = 2
+		self.handshakeComplete = false
+		repeat
+			self:debugPrint(`Attempting handshake with daemon... (try {tries} of {HANDSHAKE_MAX_RETRIES})`)
+			sendMessage("handshakeStudio", {})
+
+			local startTime = tick()
+			while tick() - startTime < HANDSHAKE_TIMEOUT do
+				if not self.syncEnabled or not self.wsClient or not self.wsClient.connected then return false end
+				if self.handshakeComplete then return true end
+				task.wait(0.1)
+			end
+
+			tries += 1
+			warn(`[Azul]: Handshake attempt {tries} failed, retrying...`)
+		--self.wsClient:reconnect()
+		until tries >= HANDSHAKE_MAX_RETRIES
+
+		return self.handshakeComplete
+	end
+
 	function self:reloadSourcemap()
 		sendFullSnapshot()
 	end
 
 	function self:startSync()
-		if self.syncEnabled then return end
+		if self.syncEnabled then
+			warn(`[Azul::{script}]: A Sync Session already active!`)
+			return
+		end
 
 		self:infoPrint("Starting sync...")
 		self.syncEnabled = true
@@ -669,19 +761,32 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 		self.batchFlushToken += 1
 
 		if self.ui then self.ui:UpdateSyncState(true) end
+		if self.ui then self.ui:UpdateHandshakeState(false) end
 
 		self.wsClient = WebSocketClient.new(self.config.WS_URL, {
 			debugMode = self.config.DEBUG_MODE,
 			silentMode = self.config.SILENT_MODE,
 		})
 
-		self.wsClient:on("message", function(message)
-			processMessage(message)
-		end)
+		if not self.wsClient then
+			warn("[Azul]: Failed to create WebSocket client")
+			self:stopSync()
+			return
+		end
 
 		self.wsClient:on("connect", function()
-			self:infoPrint("Connected to daemon")
-			sendDaemonConfig()
+			self:infoPrint(`Connected to WebSocket at: {self.config.WS_URL}`)
+			local handshakeResult = tryHandshake()
+
+			if not handshakeResult then
+				-- warn("[Azul]: Failed to connect to the Daemon after multiple attempts, disconnecting...")
+				self:stopSync()
+				return
+			end
+		end)
+
+		self.wsClient:on("message", function(message)
+			processMessage(message)
 		end)
 
 		self.wsClient:on("disconnect", function()
@@ -765,7 +870,9 @@ function SyncSession.new(plugin: Plugin, settingsStore: SettingsStore.SettingsSt
 
 		self:infoPrint("Stopping sync...")
 		self.syncEnabled = false
+		self.handshakeComplete = false
 
+		if self.ui then self.ui:UpdateHandshakeState(false) end
 		if self.ui then self.ui:UpdateSyncState(false) end
 
 		if self.wsClient then self.wsClient:disconnect() end

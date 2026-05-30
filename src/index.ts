@@ -37,7 +37,9 @@ export class SyncDaemon {
       res.end("Not found");
     });
 
-    this.ipc = new IPCServer(config.port, this.httpServer);
+    this.ipc = new IPCServer(config.port, this.httpServer, {
+      requestSnapshotOnConnect: false,
+    });
 
     this.setupHandlers();
     this.httpServer.listen(config.port);
@@ -49,6 +51,9 @@ export class SyncDaemon {
   private setupHandlers(): void {
     // Handle messages from Studio (WebSocket)
     this.ipc.onMessage((message) => this.handleStudioMessage(message));
+    this.ipc.onHandshake(() => {
+      this.ipc.requestSnapshot();
+    });
 
     // Handle file changes from filesystem
     this.fileWatcher.onChange((filePath, source) => {

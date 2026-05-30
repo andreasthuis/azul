@@ -15,8 +15,10 @@ export class IPCServer {
   private client: WebSocket | null = null;
   private messageHandler: MessageHandler | null = null;
   private connectionHandler: (() => void) | null = null;
+  private handshakeHandler: (() => void) | null = null;
   private requestSnapshotOnConnect: boolean;
   private pingIntervals = new Map<WebSocket, NodeJS.Timeout>();
+  private handshakeComplete = false;
 
   constructor(port?: number, server?: HttpServer, options?: IPCServerOptions) {
     this.requestSnapshotOnConnect = options?.requestSnapshotOnConnect !== false;
@@ -50,6 +52,7 @@ export class IPCServer {
       }
 
       this.client = ws;
+      this.handshakeComplete = false;
 
       if (this.connectionHandler) {
         this.connectionHandler();
@@ -59,6 +62,17 @@ export class IPCServer {
         try {
           const message: StudioMessage = JSON.parse(data.toString());
           log.debug(`Received: ${message.type}`);
+
+          if (message.type === "handshakeStudio") {
+            if (!this.handshakeComplete) {
+              this.handshakeComplete = true;
+              if (this.handshakeHandler) {
+                this.handshakeHandler();
+              }
+            }
+            this.send({ type: "handshakeAck" });
+            return;
+          }
 
           if (this.messageHandler) {
             this.messageHandler(message);
@@ -78,6 +92,7 @@ export class IPCServer {
 
         log.info("Studio client disconnected");
         this.client = null;
+        this.handshakeComplete = false;
       });
 
       ws.on("error", (error) => {
@@ -131,6 +146,16 @@ export class IPCServer {
    */
   public onConnection(handler: () => void): void {
     this.connectionHandler = handler;
+  }
+
+  /**
+   * Register a handler that fires when Studio completes the handshake
+   */
+  public onHandshake(handler: () => void): void {
+    this.handshakeHandler = handler;
+    if (this.handshakeComplete) {
+      handler();
+    }
   }
 
   /**

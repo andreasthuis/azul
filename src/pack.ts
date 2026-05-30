@@ -100,7 +100,11 @@ export class PackCommand {
       });
 
       this.ipc.onConnection(() => {
-        log.info("Studio connected. Requesting snapshot...");
+        log.info("Studio connected. Waiting for handshake...");
+      });
+
+      this.ipc.onHandshake(() => {
+        log.info("Handshake complete. Requesting snapshot...");
         this.ipc.requestSnapshot(options);
       });
 

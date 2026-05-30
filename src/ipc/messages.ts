@@ -44,7 +44,8 @@ export type StudioPayloadMessage =
   | DeletedMessage
   | PingMessage
   | ClientDisconnect
-  | PushConfigMessage;
+  | PushConfigMessage
+  | HandshakeMessageStudio;
 
 export interface BatchMessage {
   type: "batch";
@@ -93,6 +94,14 @@ export interface PushConfigMessage {
   config: PushConfig;
 }
 
+export interface HandshakeAckMessage {
+  type: "handshakeAck";
+}
+
+export interface HandshakeMessageStudio {
+  type: "handshakeStudio";
+}
+
 /**
  * Messages from Daemon → Studio
  */
@@ -104,7 +113,8 @@ export type DaemonMessage =
   | ErrorMessage
   | BuildSnapshotMessage
   | RequestPushConfigMessage
-  | PushSnapshotMessage;
+  | PushSnapshotMessage
+  | HandshakeAckMessage;
 
 export interface PatchScriptMessage {
   type: "patchScript";

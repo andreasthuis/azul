@@ -83,7 +83,7 @@ export class PushCommand {
 
       await new Promise<void>((resolve) => {
         const sendSnapshot = () => {
-          log.info("Studio connected. Sending Rojo compatibility push...");
+          log.info("Handshake complete. Sending Rojo compatibility push...");
           this.ipc.send({ type: "pushSnapshot", mappings: snapshotMappings });
           setTimeout(() => {
             this.ipc.close();
@@ -91,11 +91,11 @@ export class PushCommand {
           }, 200);
         };
 
-        if (this.ipc.isConnected()) {
-          sendSnapshot();
-        } else {
-          this.ipc.onConnection(sendSnapshot);
-        }
+        this.ipc.onConnection(() => {
+          log.info("Studio connected. Waiting for handshake...");
+        });
+
+        this.ipc.onHandshake(sendSnapshot);
       });
       return;
     }
@@ -284,7 +284,7 @@ export class PushCommand {
 
     await new Promise<void>((resolve) => {
       const sendSnapshot = () => {
-        log.info("Studio connected. Sending push snapshot...");
+        log.info("Handshake complete. Sending push snapshot...");
         this.ipc.send({ type: "pushSnapshot", mappings: snapshotMappings });
         setTimeout(() => {
           this.ipc.close();
@@ -292,11 +292,11 @@ export class PushCommand {
         }, 200);
       };
 
-      if (this.ipc.isConnected()) {
-        sendSnapshot();
-      } else {
-        this.ipc.onConnection(sendSnapshot);
-      }
+      this.ipc.onConnection(() => {
+        log.info("Studio connected. Waiting for handshake...");
+      });
+
+      this.ipc.onHandshake(sendSnapshot);
     });
   }
 
@@ -984,6 +984,10 @@ export class PushCommand {
 
       // Ask the plugin to send config after connection
       this.ipc.onConnection(() => {
+        log.info("Studio connected. Waiting for handshake...");
+      });
+
+      this.ipc.onHandshake(() => {
         const request: RequestPushConfigMessage = { type: "requestPushConfig" };
         this.ipc.send(request);
       });

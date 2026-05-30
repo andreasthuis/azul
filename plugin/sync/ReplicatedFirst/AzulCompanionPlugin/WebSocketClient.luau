@@ -19,7 +19,7 @@ type configType = {
 }
 
 -- self type
-type WebSocketClient = {
+export type WebSocketClient = {
 	url: string,
 	client: WebStreamClient,
 	connected: boolean,
@@ -28,7 +28,9 @@ type WebSocketClient = {
 
 	new: (url: string?) -> WebSocketClient,
 	on: (self: WebSocketClient, event: string, handler: (any) -> ()) -> (),
+	once: (self: WebSocketClient, event: string, handler: (any) -> ()) -> (),
 	connect: (self: WebSocketClient) -> boolean,
+	reconnect: (self: WebSocketClient) -> boolean,
 	handleMessage: (self: WebSocketClient, message: string) -> (),
 	send: (self: WebSocketClient, message: string) -> boolean,
 	disconnect: (self: WebSocketClient) -> (),
@@ -56,18 +58,27 @@ end
 function WebSocketClient:debugPrint(...)
 	self = self :: WebSocketClient
 	if self.config.silentMode or not self.config.debugMode then return end
-	print(...)
+	print(`[🐛 WebSocket]: `, ...)
 end
 
 function WebSocketClient:infoPrint(...)
 	self = self :: WebSocketClient
 	if self.config.silentMode then return end
-	print(...)
+	print(`[WebSocket]: `, ...)
 end
 
 function WebSocketClient:on(event, handler)
 	self = self :: WebSocketClient
 	self.messageHandlers[event] = handler
+end
+
+function WebSocketClient:once(event, handler)
+	self = self :: WebSocketClient
+	local function wrapper(...)
+		handler(...)
+		self.messageHandlers[event] = nil
+	end
+	self.messageHandlers[event] = wrapper
 end
 
 function WebSocketClient:connect()
@@ -92,17 +103,17 @@ function WebSocketClient:connect()
 
 	-- Set up message handler (only MessageReceived is documented)
 	self.client.MessageReceived:Connect(function(message)
-		local parseSuccess, parseError = pcall(function()
+		local parseSuccess, parseResult = pcall(function()
 			self:handleMessage(message)
 		end)
 		if not parseSuccess then
-			warn("[WebSocket]: Error handling message:", parseError)
+			warn("[WebSocket]: Error handling message:", parseResult)
 			warn("[WebSocket]: Raw message was:", message)
 		end
 	end)
 
 	-- Notify connection established
-	self:debugPrint("[🐛 WebSocket]: Connected to", self.url)
+	self:debugPrint("Connected to", self.url)
 	if self.messageHandlers.connect then task.defer(function()
 		self.messageHandlers.connect()
 	end) end
@@ -110,20 +121,33 @@ function WebSocketClient:connect()
 	return true
 end
 
+function WebSocketClient:reconnect()
+	self = self :: WebSocketClient
+
+	self:debugPrint(`Reconnect requested to WebSocket at: {self.url}`)
+
+	self:disconnect()
+	return self:connect()
+end
+
 function WebSocketClient:handleMessage(message)
 	self = self :: WebSocketClient
 	if not message or message == "" then return end
 
-	self:debugPrint("[🐛 WebSocket]: Received message:", string.sub(message, 1, 100))
+	self:debugPrint("Received message:", string.sub(message, 1, 100))
 
-	local success, data = pcall(function()
+	local success, result = pcall(function()
 		return HttpService:JSONDecode(message)
 	end)
 
-	if success and self.messageHandlers.message then
-		self.messageHandlers.message(data)
+	if success then
+		if self.messageHandlers.message then self.messageHandlers.message(result) end
+		local messageType = result and result.type
+		if type(messageType) == "string" and self.messageHandlers[messageType] then
+			self.messageHandlers[messageType](result)
+		end
 	elseif not success then
-		warn("[WebSocket]: Failed to parse message:", message)
+		warn(`[WebSocket]: Failed to decode message as JSON: {result}`)
 	end
 end
 
@@ -134,7 +158,7 @@ function WebSocketClient:send(message)
 		return false
 	end
 
-	self:debugPrint("[🐛 WebSocket]: Sending:", string.sub(message, 1, 200))
+	self:debugPrint("Sending:", string.sub(message, 1, 200))
 
 	local success, err = pcall(function()
 		self.client:Send(message)

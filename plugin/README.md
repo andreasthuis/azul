@@ -16,19 +16,37 @@
 4. Restart Roblox Studio
 5. The Azul icon should now appear in the toolbar
 
-### Method 3: Build via Azul
+### Method 3: Build via Azul (for contributors)
 
 You can use Azul to build the plugin directly from source code:
 
 ```ps1
+# Move into the plugin directory
 cd plugin
+
+# Build the plugin using the generated sourcemap
 azul build --from-sourcemap .\sourcemap.json
 ```
 
 > [!NOTE]
-> Note that, for now, you must first have **the plugin itself already installed** in Studio for this option to work.
+> You must have **the plugin itself already installed** in Studio for this option to work.
 >
 > This is planned to change soon by allowing Azul to generate Model files (`rbxmx`) directly.
+
+Please note that the dependencies already come bundled with the Plugin (`sync/ReplicatedFirst/AzulCompanionPlugin/Packages`). If you wish to modify them, you'll need to manually install the dependencies in your local plugin folder and push the changes back:
+
+```ps1
+# Install dependencies
+rokit install
+wally install
+
+# After modifying dependencies, push the changes to the plugin
+azul push -s .\Packages -d ReplicatedFirst.AzulCompanionPlugin.Packages
+
+# Generate Wally package types
+# Note: wally-package-types will complain because Azul doesn't include Wally link files, ignore the warnings since it'll still work
+wally-package-types --sourcemap .\sourcemap.json .\sync\ReplicatedFirst\AzulCompanionPlugin\Packages\
+```
 
 ## Troubleshooting
 

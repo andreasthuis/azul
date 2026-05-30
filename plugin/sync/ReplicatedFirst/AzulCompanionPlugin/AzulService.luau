@@ -1,10 +1,12 @@
 --!strict
 local AzulService = {}
-AzulService.VERSION = 42
+AzulService.VERSION = 43
 
 -- Services
 local ScriptEditorService = game:GetService("ScriptEditorService")
 local HttpService = game:GetService("HttpService")
+local AssetService = game:GetService("AssetService")
+local InsertService = game:GetService("InsertService")
 
 -- Modules
 local Serializer = require("./Serializer")
@@ -29,6 +31,10 @@ end
 ]=]
 function AzulService.isScript(instance)
 	return instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript")
+end
+
+function AzulService.isScriptClass(className)
+	return className == "Script" or className == "LocalScript" or className == "ModuleScript"
 end
 
 --[=[
@@ -272,6 +278,12 @@ type InstanceData = {
 	tags: { string }?,
 }
 
+type MeshData = {
+	meshId: string,
+	collisionFidelity: Enum.CollisionFidelity,
+	renderFidelity: Enum.RenderFidelity,
+}
+
 --- Apply snapshot instances to the workspace
 function AzulService.applySnapshotInstances(
 	instances: { InstanceData },
@@ -282,8 +294,79 @@ function AzulService.applySnapshotInstances(
 		return #a.path < #b.path
 	end)
 
-	local function isScriptClass(className: string): boolean
-		return className == "Script" or className == "LocalScript" or className == "ModuleScript"
+	--[=[
+		Extract MeshId from properties if present and valid. We need to do this before instance creation because MeshId is a special case that requires creating the MeshPart via InsertService with the content ID, and we want to avoid applying it as a normal property which would fail and log errors.
+	]=]
+	local function extractMeshId(properties: { [string]: any }?): string?
+		if type(properties) ~= "table" then return nil end
+		local raw = properties.MeshId
+		if raw == nil then return nil end
+		local value = Serializer.deserializeValue(raw)
+		if type(value) == "string" and value ~= "" then return value end
+		return nil
+	end
+
+	local function getMeshData(properties: { [string]: any }?): MeshData?
+		if type(properties) ~= "table" then return nil end
+		local meshId = extractMeshId(properties)
+		if not meshId then return nil end
+		local collisionFidelity = Enum.CollisionFidelity.Default :: Enum.CollisionFidelity
+		local renderFidelity = Enum.RenderFidelity.Automatic :: Enum.RenderFidelity
+
+		if properties["CollisionFidelity"] then
+			collisionFidelity = Serializer.deserializeValue(properties["CollisionFidelity"])
+		end
+
+		if properties["RenderFidelity"] then
+			renderFidelity = Serializer.deserializeValue(properties["RenderFidelity"])
+		end
+
+		return {
+			meshId = meshId,
+			collisionFidelity = collisionFidelity,
+			renderFidelity = renderFidelity,
+		}
+	end
+
+	--[=[
+		Strip the MeshId property from instance properties before creating the instance.
+	]=]
+	local function stripMeshId(properties: { [string]: any }?): { [string]: any }?
+		if type(properties) ~= "table" then return nil end
+		local filtered = {}
+		local hasValues = false
+		for key, value in pairs(properties) do
+			if key ~= "MeshId" then
+				filtered[key] = value
+				hasValues = true
+			end
+		end
+		if not hasValues then return {} end
+		return filtered
+	end
+
+	local function recreateMeshPart(
+		existing: MeshPart,
+		meshData: MeshData,
+		targetName: string,
+		targetParent: Instance?
+	): MeshPart?
+		local okCreate, newMeshPart = pcall(function()
+			return InsertService:CreateMeshPartAsync(
+				meshData.meshId,
+				meshData.collisionFidelity,
+				meshData.renderFidelity
+			)
+		end)
+		if not okCreate or not newMeshPart then return nil end
+
+		newMeshPart.Name = targetName
+		for _, child in ipairs(existing:GetChildren()) do
+			child.Parent = newMeshPart
+		end
+		newMeshPart.Parent = targetParent or existing.Parent
+		existing:Destroy()
+		return newMeshPart
 	end
 
 	--[=[
@@ -397,7 +480,7 @@ function AzulService.applySnapshotInstances(
 		debugPrint(`Determined parent for instance "{item.name}" ({item.className}): {tostring(parent)}`)
 
 		local targetName = adjustedPath[#adjustedPath]
-		if isScriptClass(item.className) then
+		if AzulService.isScriptClass(item.className) then
 			local sameNameChildren = {}
 			local hasPreExistingSameNamed = false
 
@@ -463,7 +546,7 @@ function AzulService.applySnapshotInstances(
 		local instance = existing
 
 		if existing and existing.ClassName ~= item.className then
-			local targetIsScript = isScriptClass(item.className)
+			local targetIsScript = AzulService.isScriptClass(item.className)
 			if targetIsScript then
 				if AzulService.isProtectedRobloxContainer(existing) then
 					instance = existing
@@ -489,16 +572,43 @@ function AzulService.applySnapshotInstances(
 			end
 		end
 
-		if not instance then
-			local newInstance
-			local okNew, createdInstance = pcall(function()
-				return Instance.new(item.className)
-			end)
-			if okNew and createdInstance then
-				newInstance = createdInstance
-			else
-				newInstance = Instance.new("Folder")
-				debugPrint(`Failed to create instance of class "{item.className}", created Folder placeholder instead.`)
+		if not instance then -- If we still don't have an existing instance, create it
+			local newInstance: Instance
+			if item.className == "MeshPart" then
+				local meshData = getMeshData(item.properties)
+				if meshData then
+					local content = Content.fromUri(meshData.meshId)
+					local okMesh, meshResult = pcall(function()
+						return InsertService:CreateMeshPartAsync(
+							meshData.meshId,
+							meshData.collisionFidelity,
+							meshData.renderFidelity
+						)
+					end)
+
+					if okMesh and meshResult then
+						newInstance = meshResult
+					elseif not okMesh then
+						warn(
+							`[AzulService]: Failed to create MeshPart for instance "{item.name}" with MeshId "{meshData.meshId}": {tostring(
+								meshResult
+							)}.`
+						)
+					end
+				end
+			end
+			if not newInstance then
+				local okNew, createdInstance = pcall(function()
+					return Instance.new(item.className)
+				end)
+				if okNew and createdInstance then
+					newInstance = createdInstance
+				else
+					newInstance = Instance.new("Folder")
+					debugPrint(
+						`Failed to create instance of class "{item.className}", created Folder placeholder instead.`
+					)
+				end
 			end
 			newInstance.Name = adjustedPath[#adjustedPath]
 			newInstance.Parent = parent :: Instance
@@ -519,22 +629,33 @@ function AzulService.applySnapshotInstances(
 			end
 		end
 
-		if instance then
+		if instance then -- Apply properties, attributes, and tags if we have a valid instance
+			if item.className == "MeshPart" and instance:IsA("MeshPart") then
+				local meshData = getMeshData(item.properties)
+				if meshData and meshData.meshId ~= (instance :: MeshPart).MeshId then
+					local replaced = recreateMeshPart(instance :: MeshPart, meshData, targetName, parent)
+					if replaced then instance = replaced end
+				end
+			end
+
 			if type(item.guid) == "string" and item.guid ~= "" then
 				existingInstancesByGuid[item.guid] = instance
 				resolvedInstancesByGuid[item.guid] = instance
 			end
 
+			local propertiesForApply = item.properties
+			if instance:IsA("MeshPart") then propertiesForApply = stripMeshId(propertiesForApply) end
+
 			table.insert(deferredPropertyApplications, {
 				instance = instance,
-				properties = item.properties,
+				properties = propertiesForApply,
 			})
 
 			Serializer.applySerializedAttributes(instance, item.attributes)
 			Serializer.applySerializedTags(instance, item.tags)
 		end
 
-		if isScriptClass(item.className) and item.source and instance then
+		if AzulService.isScriptClass(item.className) and item.source and instance then
 			if AzulService.isScript(instance) then
 				AzulService.setScriptSource(instance :: Script, item.source)
 				updated += 1
@@ -637,6 +758,15 @@ function AzulService.readPushConfig(pushConfigPath: { string }): ({ [string]: an
 	}
 
 	return configPayload, nil
+end
+
+function AzulService.parseCommaSeparatedList(str: string): { string }
+	local result = {}
+	for segment in str:gmatch("([^,]+)") do
+		local trimmed = segment:match("^%s*(.-)%s*$")
+		if trimmed and trimmed ~= "" then table.insert(result, trimmed) end
+	end
+	return result
 end
 
 return AzulService
